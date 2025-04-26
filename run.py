@@ -185,9 +185,13 @@ if __name__ == "__main__":
     # set ckpt path
     resume_from_checkpoint = task.get('resume_from_checkpoint', None)
     resume_from_checkpoint = download(resume_from_checkpoint)
+
+    trainer_config = task.get('trainer', {})
+    trainer_config.pop("strategy", None)  # ✅ 删除 strategy 字段，避免冲突
     trainer = L.Trainer(
         callbacks=callbacks,
         logger=logger,
+        strategy="auto",            
         **trainer_config,
     )
     
