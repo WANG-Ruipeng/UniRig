@@ -6,7 +6,7 @@ llm:
   hidden_size: 1024
   word_embed_proj_dim: 1024
   do_layer_norm_before: True
-  _attn_implementation: flash_attention_2
+  _attn_implementation: eager
 
 mesh_encoder:
   __target__: michelangelo_encoder
@@ -26,7 +26,7 @@ mesh_encoder:
   init_scale: 0.25
   qkv_bias: False
   use_checkpoint: False
-  flash: True
+  flash: False
   supervision_type: sdf
   query_method: False
   token_num: 1024
