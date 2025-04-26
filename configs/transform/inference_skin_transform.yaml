@@ -12,31 +12,21 @@ order_config: &order_config
     vroid: ./configs/skeleton/vroid.yaml
     mixamo: ./configs/skeleton/mixamo.yaml
 
-vertex_group_config: &vertex_group_config
-  names: ['geodesic_distance', 'voxel_skin']
-  kwargs:
-    voxel_skin:
-      grid: 64
-      alpha: 0.5
-      link_dis: 0.00001
-      grid_query: 27
-      vertex_query: 27
-      grid_weight: 3.0
-    geodesic_distance:
-      deterministic: True
-      soft_mask: True
-
-validate_transform_config: &validate_transform_config
+predict_transform_config: 
   augment_config:
     augment_affine_config:
       normalize_into: [-1.0, 1.0]
-      random_scale_p: 0.0
-      random_scale: [1.0, 1.0]
-      random_shift_p: 0.0
-      random_shift: [0.0, 0.0]
   tail_config: *tail_config
   order_config: *order_config
-  vertex_group_config: *vertex_group_config
+  vertex_group_config:
+    names: ['voxel_skin']
+    kwargs:
+      voxel_skin:
+        grid: 196 # increase this for better results
+        alpha: 0.5
+        link_dis: 0.00001
+        grid_query: 7
+        vertex_query: 1
+        grid_weight: 3.0
+        # mode: exp
   sampler_config: *sampler_config
-
-predict_transform_config: *validate_transform_config

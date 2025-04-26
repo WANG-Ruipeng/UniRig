@@ -1,29 +1,32 @@
 __target__: unirig_skin
 
-num_train_vertex: 4096
-num_heads: 8
-feat_dim: 384
+num_train_vertex: 512 # increase this for faster speed at the cost of memory
+num_heads: 16
+feat_dim: 768
 grid_size: 0.005
 mlp_dim: 512
-num_bone_attn: 4
-num_mesh_bone_attn: 10
+num_bone_attn: 8
+num_mesh_bone_attn: 16
 bone_embed_dim: 1024
+voxel_mask: 3.0
 
 mesh_encoder:
   # vertex groups are handled in model
   __target__: ptv3obj
   pretrained_path: ~
   freeze_encoder: False
-  in_channels: 6
+  in_channels: 9
   cls_mode: False
   shuffle_orders: True
   drop_path: 0.0
   upcast_attention: False
   upcast_softmax: False
-  enc_channels: [32, 64, 128, 192, 384]
+  enc_depths: [3, 3, 3, 6, 16]
+  enc_channels: [32, 64, 128, 256, 384]
   enc_num_head: [2, 4, 8, 16, 24]
   enable_qknorm: True
-  layer_norm: True
+  layer_norm: False
+  res_linear: True
 
 global_encoder:
   __target__: michelangelo_encoder

@@ -2,9 +2,9 @@
 config="configs/data/quick_inference.yaml"
 require_suffix="obj,fbx,FBX,dae,glb,gltf,vrm"
 num_runs=1
-force_override="false"
+force_override="true"
 faces_target_count=50000
-skin_task="configs/task/quick_inference_skin.yaml"
+skin_task="configs/task/quick_inference_unirig_skin.yaml"
 seed=12345
 npz_dir="tmp"
 data_name="raw_data.npz"

@@ -148,8 +148,8 @@ def axis(a: np.ndarray):
     b = np.concatenate([-a[:, 0:1], -a[:, 1:2], a[:, 2:3]], axis=1)
     return b
 
-def get_correct_orientation_kdtree(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    tree = cKDTree(b[np.random.permutation(b.shape[0])[:4096]])
+def get_correct_orientation_kdtree(a: np.ndarray, b: np.ndarray, bones: np.ndarray, num: int=16384) -> np.ndarray:
+    tree = cKDTree(b[np.random.permutation(b.shape[0])[:num]])
     
     min_loss = float('inf')
     best_transformed = a.copy()
@@ -158,16 +158,19 @@ def get_correct_orientation_kdtree(a: np.ndarray, b: np.ndarray) -> np.ndarray:
                         for y in [1, -1] 
                         for z in [1, -1]]
     for perm in axis_permutations:
-        permuted_a = a[np.random.permutation(a.shape[0])[:4096]][:, perm]
+        permuted_a = a[np.random.permutation(a.shape[0])[:num]][:, perm]
         for signs in sign_combinations:
             transformed = permuted_a * np.array(signs)
             distances, indices = tree.query(transformed)
-            current_loss = np.sum(distances ** 2)
-            if current_loss < min_loss:
+            current_loss = distances.mean()
+            if current_loss < min_loss: # prevent from mirroring
                 min_loss = current_loss
                 best_transformed = a[:, perm] * np.array(signs)
+                bones[:, :3] = bones[:, :3][:, perm] * np.array(signs)
+                bones[:, 3:] = bones[:, 3:][:, perm] * np.array(signs)
+                print(current_loss, perm, signs)
     
-    return best_transformed
+    return best_transformed, bones
 
 def denormalize_vertices(mesh_vertices: ndarray, vertices: ndarray, bones: ndarray) -> np.ndarray:
     min_vals = np.min(mesh_vertices, axis=0)
@@ -233,6 +236,8 @@ def make_armature(
         parent_bone = edit_bones.get(parent_name)
         bone.parent = parent_bone
         bone.use_connect = False # always False currently
+
+    vertices, bones = get_correct_orientation_kdtree(vertices, mesh_vertices, bones)
     
     for i in range(J):
         if add_root:
@@ -240,18 +245,17 @@ def make_armature(
         else:
             pname = None if parents[i] is None else names[parents[i]]
         extrude_bone(names[i], pname, bones[i, :3], bones[i, 3:])
-    
+
     # must set to object mode to enable parent_set
     bpy.ops.object.mode_set(mode='OBJECT')
     objects = bpy.data.objects
     for o in bpy.context.selected_objects:
         o.select_set(False)
     
-    vertices = get_correct_orientation_kdtree(vertices, mesh_vertices)
-    
     argsorted = np.argsort(-skin, axis=1)
-    vertex_group_reweight = skin[np.arange(skin.shape[0])[..., None], argsorted] 
+    vertex_group_reweight = skin[np.arange(skin.shape[0])[..., None], argsorted]
     vertex_group_reweight = vertex_group_reweight / vertex_group_reweight[..., :group_per_vertex].sum(axis=1)[...,None]
+    vertex_group_reweight = np.nan_to_num(vertex_group_reweight)
     tree = cKDTree(vertices)
     for ob in objects:
         if ob.type != 'MESH':
@@ -344,7 +348,7 @@ def merge(
         is_vrm=is_vrm,
     )
     
-    # os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     try:
         if is_vrm:
             bpy.ops.export_scene.vrm(filepath=output_path)
@@ -404,7 +408,6 @@ def transfer(source: str, target: str, output: str, add_root: bool=False):
     arranged_bones = get_arranged_bones(armature)
     skin = get_skin(arranged_bones)
     joints, tails, parents, names, matrix_local = process_armature(armature, arranged_bones)
-    print(names)
     merge(
         path=target,
         output_path=output,

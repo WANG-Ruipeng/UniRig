@@ -7,6 +7,7 @@ from typing import Dict, List
 from transformers import AutoModelForCausalLM, AutoConfig
 import math
 import torch_scatter
+from flash_attn.modules.mha import MHA
 
 from .spec import ModelSpec, ModelInput
 from .parse_encoder import MAP_MESH_ENCODER, get_mesh_encoder
@@ -113,19 +114,20 @@ class ResidualCrossAttn(nn.Module):
 
         self.norm1 = nn.LayerNorm(feat_dim)
         self.norm2 = nn.LayerNorm(feat_dim)
-        self.attention = nn.MultiheadAttention(embed_dim=feat_dim, num_heads=num_heads, batch_first=True)
+        # self.attention = nn.MultiheadAttention(embed_dim=feat_dim, num_heads=num_heads, batch_first=True)
+        self.attention = MHA(embed_dim=feat_dim, num_heads=num_heads, cross_attn=True)
         self.ffn = nn.Sequential(
-            nn.Linear(feat_dim, feat_dim * 2),
-            nn.SiLU(),
-            nn.Linear(feat_dim * 2, feat_dim)
+            nn.Linear(feat_dim, feat_dim * 4),
+            nn.GELU(),
+            nn.Linear(feat_dim * 4, feat_dim),
         )
         
-    def forward(self, q, k, v, key_mask=None, attn_mask=None):
-        x = self.norm1(q)
-        attn_output, _ = self.attention(x, k, v, key_padding_mask=key_mask, attn_mask=attn_mask)
-        q = q + attn_output
-        q = q + self.ffn(self.norm2(q))
-        return q
+    def forward(self, q, kv):
+        residual = q
+        attn_output = self.attention(q, x_kv=kv)
+        x = self.norm1(residual + attn_output)
+        x = self.norm2(x + self.ffn(x))
+        return x
 
 class BoneEncoder(nn.Module):
     def __init__(
@@ -148,13 +150,13 @@ class BoneEncoder(nn.Module):
             self.position_embed,
             nn.Linear(self.position_embed.out_dim, embed_dim),
             nn.LayerNorm(embed_dim),
-            nn.SiLU(),
-            nn.Linear(embed_dim, embed_dim * 2),
-            nn.LayerNorm(embed_dim * 2),
-            nn.SiLU(),
-            nn.Linear(embed_dim * 2, feat_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, embed_dim * 4),
+            nn.LayerNorm(embed_dim * 4),
+            nn.GELU(),
+            nn.Linear(embed_dim * 4, feat_dim),
             nn.LayerNorm(feat_dim),
-            nn.SiLU(),
+            nn.GELU(),
         )
         self.attn = nn.ModuleList()
         for _ in range(self.num_attn):
@@ -173,26 +175,10 @@ class BoneEncoder(nn.Module):
         J = base_bone.shape[1]
         x = self.bone_encoder((base_bone-min_coord[:, None, :]).reshape(-1, base_bone.shape[-1])).reshape(B, J, -1)
 
-        seq_len = global_latents.shape[1]
-        attn_mask = torch.zeros(B, J, J + seq_len, device=x.device)
-        attn_mask[:, :J, :J] = -float('inf')
-        for i in range(B):
-            bone_len = num_bones[i]
-            for j in range(bone_len):
-                parent = parents[i, j]
-                if parent != -1:
-                    attn_mask[i, parent, j] = 0.0
-                attn_mask[i, j, j] = 0.0
-
-        attn_mask = attn_mask.repeat_interleave(self.num_heads, dim=0)
-        # (B, J + seq, feat_dim)
         latents = torch.cat([x, global_latents], dim=1)
         
         for (i, attn) in enumerate(self.attn):
-            if i % 2 == 0:
-                x = attn(x, latents, latents, attn_mask=attn_mask)
-            else:
-                x = attn(x, latents, latents)
+            x = attn(x, latents)
         return x
 
 class SkinweightPred(nn.Module):
@@ -201,10 +187,16 @@ class SkinweightPred(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(in_dim, mlp_dim),
             nn.LayerNorm(mlp_dim),
-            nn.SiLU(),
+            nn.GELU(),
             nn.Linear(mlp_dim, mlp_dim),
             nn.LayerNorm(mlp_dim),
-            nn.SiLU(),
+            nn.GELU(),
+            nn.Linear(mlp_dim, mlp_dim),
+            nn.LayerNorm(mlp_dim),
+            nn.GELU(),
+            nn.Linear(mlp_dim, mlp_dim),
+            nn.LayerNorm(mlp_dim),
+            nn.GELU(),
             nn.Linear(mlp_dim, 1),
         )
 
@@ -223,25 +215,13 @@ class UniRigSkin(ModelSpec):
             vertex_groups = b.asset.sampled_vertex_groups
             current_offset += b.vertices.shape[0]
             # (N, J)
-            geodesic_distance = vertex_groups['geodesic_distance']
-            geodesic_mask = vertex_groups['geodesic_mask']
             voxel_skin = vertex_groups['voxel_skin']
-            if 'skin' in vertex_groups:
-                skin = vertex_groups['skin']
-            else:
-                skin = np.zeros_like(geodesic_distance)
             
-            geodesic_distance = np.pad(geodesic_distance, ((0, 0), (0, max_bones-b.asset.J)), 'constant', constant_values=1.0)
-            geodesic_mask = np.pad(geodesic_mask, ((0, 0), (0, max_bones-b.asset.J)), 'constant', constant_values=0.0)
             voxel_skin = np.pad(voxel_skin, ((0, 0), (0, max_bones-b.asset.J)), 'constant', constant_values=0.0)
-            skin = np.pad(skin, ((0, 0), (0, max_bones-b.asset.J)), 'constant', constant_values=0.0)
             
             # (J, 4, 4)
             res.append({
-                'geodesic_distance': geodesic_distance,
-                'geodesic_mask': geodesic_mask,
                 'voxel_skin': voxel_skin,
-                'skin': skin,
                 'offset': current_offset,
             })
         return res
@@ -257,20 +237,23 @@ class UniRigSkin(ModelSpec):
         self.num_bone_attn          = kwargs['num_bone_attn']
         self.num_mesh_bone_attn     = kwargs['num_mesh_bone_attn']
         self.bone_embed_dim         = kwargs['bone_embed_dim']
+        self.voxel_mask             = kwargs.get('voxel_mask', 2)
 
         self.mesh_encoder = get_mesh_encoder(**mesh_encoder)
         self.global_encoder = get_mesh_encoder(**global_encoder)
         if isinstance(self.mesh_encoder, MAP_MESH_ENCODER.ptv3obj):
             self.feat_map = nn.Sequential(
-                nn.Linear(self.feat_dim, self.feat_dim),
-                nn.SiLU(),
+                nn.Linear(mesh_encoder['enc_channels'][-1], self.feat_dim),
+                nn.LayerNorm(self.feat_dim),
+                nn.GELU(),
             )
         else:
             raise NotImplementedError()
         if isinstance(self.global_encoder, MAP_MESH_ENCODER.michelangelo_encoder):
             self.out_proj = nn.Sequential(
                 nn.Linear(self.global_encoder.width, self.feat_dim),
-                nn.SiLU(),
+                nn.LayerNorm(self.feat_dim),
+                nn.GELU(),
             )
         else:
             raise NotImplementedError()
@@ -283,8 +266,13 @@ class UniRigSkin(ModelSpec):
             num_attn=self.num_bone_attn,
         )
         
+        self.downscale = nn.Sequential(
+            nn.Linear(2 * self.num_heads, self.num_heads),
+            nn.LayerNorm(self.num_heads),
+            nn.GELU(),
+        )
         self.skinweight_pred = SkinweightPred(
-            4 * self.num_heads,
+            self.num_heads,
             self.mlp_dim,
         )
         
@@ -296,9 +284,9 @@ class UniRigSkin(ModelSpec):
         self.qmesh = nn.Linear(self.feat_dim, self.feat_dim * self.num_heads)
         self.kmesh = nn.Linear(self.feat_dim, self.feat_dim * self.num_heads)
 
-        self.geo_dis_embed = nn.Linear(1, self.num_heads)
-        self.geo_mask_embed = nn.Linear(1, self.num_heads)
         self.voxel_skin_embed = nn.Linear(1, self.num_heads)
+        self.voxel_skin_norm = nn.LayerNorm(self.num_heads)
+        self.attn_skin_norm = nn.LayerNorm(self.num_heads)
 
     def encode_mesh_cond(self, vertices: FloatTensor, normals: FloatTensor) -> FloatTensor:
         assert not torch.isnan(vertices).any()
@@ -324,8 +312,6 @@ class UniRigSkin(ModelSpec):
         joints: FloatTensor = batch['joints']
         tails: FloatTensor = batch['tails']
         voxel_skin: FloatTensor = batch['voxel_skin']
-        geodesic_distance: FloatTensor = batch['geodesic_distance']
-        geodesic_mask: FloatTensor = batch['geodesic_mask']
         parents: LongTensor = batch['parents']
         
         # turn inputs' dtype into model's dtype
@@ -334,8 +320,6 @@ class UniRigSkin(ModelSpec):
         normals = normals.type(dtype)
         joints = joints.type(dtype)
         tails = tails.type(dtype)
-        geodesic_distance = geodesic_distance.type(dtype)
-        geodesic_mask = geodesic_mask.type(dtype)
         voxel_skin = voxel_skin.type(dtype)
         
         B = vertices.shape[0]
@@ -368,10 +352,10 @@ class UniRigSkin(ModelSpec):
         )
         
         if isinstance(self.mesh_encoder, MAP_MESH_ENCODER.ptv3obj):
-            feat = torch.cat([vertices, normals], dim=1)
+            feat = torch.cat([vertices, normals, torch.zeros_like(vertices)], dim=-1)
             ptv3_input = {
                 'coord': vertices.reshape(-1, 3),
-                'feat': feat.reshape(-1, 6),
+                'feat': feat.reshape(-1, 9),
                 'offset': torch.tensor(batch['offset']),
                 'grid_size': self.grid_size,
             }
@@ -387,23 +371,28 @@ class UniRigSkin(ModelSpec):
         else:
             raise NotImplementedError()
 
-
         # (B, J + seq_len, feat_dim)
         latents = torch.cat([bone_feat, global_latents], dim=1)
         # (B, N, feat_dim)
         for block in self.mesh_bone_attn:
             mesh_feat = block(
                 q=mesh_feat,
-                # k=bone_feat,
-                # v=bone_feat,
-                k=latents,
-                v=latents,
+                kv=latents,
             )
 
         # trans to (B, num_heads, J, feat_dim)
         bone_feat = self.kmesh(bone_feat).view(B, J, self.num_heads, self.feat_dim).transpose(1, 2)
 
         skin_pred_list = []
+        if not self.training:
+            skin_mask = voxel_skin.clone()
+            for b in range(B):
+                num = num_bones[b]
+                for i in range(num):
+                    p = parents[b, i]
+                    if p < 0:
+                        continue
+                    skin_mask[b, :, p] += skin_mask[b, :, i]
         for indices in pack:
             cur_N = len(indices)
             # trans to (B, num_heads, N, feat_dim)
@@ -416,112 +405,29 @@ class UniRigSkin(ModelSpec):
             ) / math.sqrt(self.feat_dim), dim=-1, dtype=dtype)
             # (B, num_heads, N, J) -> (B, N, J, num_heads)
             attn_weight = attn_weight.reshape(B, self.num_heads, cur_N, J).permute(0, 2, 3, 1)
+            attn_weight = self.attn_skin_norm(attn_weight)
             
-            embed_geo_dis = self.geo_dis_embed(geodesic_distance[:, indices].reshape(B, cur_N, J, 1))
-            embed_geo_mask = self.geo_mask_embed(geodesic_mask[:, indices].reshape(B, cur_N, J, 1))
             embed_voxel_skin = self.voxel_skin_embed(voxel_skin[:, indices].reshape(B, cur_N, J, 1))
-            attn_weight = torch.cat([attn_weight, embed_voxel_skin, embed_geo_dis, embed_geo_mask], dim=-1)
+            embed_voxel_skin = self.voxel_skin_norm(embed_voxel_skin)
+            
+            attn_weight = torch.cat([attn_weight, embed_voxel_skin], dim=-1)
+            attn_weight = self.downscale(attn_weight)
         
             # (B, N, J, num_heads * (1+c)) -> (B, N, J)
             skin_pred = torch.zeros(B, cur_N, J).to(attn_weight.device, dtype)
-            # voxel_skin = (voxel_skin.reshape(B, N, J) + 1e-6).log()
             for i in range(B):
                 # (N*J, C)
                 input_features = attn_weight[i, :, :num_bones[i], :].reshape(-1, attn_weight.shape[-1])
+                
                 pred = self.skinweight_pred(input_features).reshape(cur_N, num_bones[i])
-                # pred = self.skinweight_pred(input_features).reshape(cur_N, num_bones[i])
                 skin_pred[i, :, :num_bones[i]] = F.softmax(pred)
             skin_pred_list.append(skin_pred)
-        return torch.cat(skin_pred_list, dim=1), torch.cat(pack, dim=0)
-    
-    def training_step(self, batch: Dict) -> Dict[str, FloatTensor]:
-        
-        num_bones: Tensor = batch['num_bones']
-        vertices: FloatTensor = batch['vertices'] # (B, N, 3)
-        skin_gt: FloatTensor = batch['skin']
-        
-        # turn inputs' dtype into model's dtype
-        dtype = next(self.parameters()).dtype
-        vertices = vertices.type(dtype)
-        skin_gt = skin_gt.type(dtype)
-        
-        B = vertices.shape[0]
-        N = vertices.shape[1]
-        
-        matrix_local = batch.get('matrix_local')
-        if matrix_local is not None:
-            matrix_local: FloatTensor
-            matrix_local = matrix_local.type(dtype)
-            
-        pose_matrix = batch.get('pose_matrix')
-        if pose_matrix is not None:
-            pose_matrix: FloatTensor
-            pose_matrix = pose_matrix.type(dtype)
-        
-        skin_pred, indices = self._get_predict(batch=batch)
-        vertices = vertices[:, indices]
-        skin_gt = skin_gt[:, indices]
-        res = {}
-        
-        if pose_matrix is not None:
-            vertices_gt = linear_blend_skinning(
-                vertex=vertices,
-                matrix_local=matrix_local,
-                matrix=pose_matrix,
-                skin=skin_gt,
-                pad=1,
-                value=1.0,
-            )
-            vertices_pred = linear_blend_skinning(
-                vertex=vertices,
-                matrix_local=matrix_local,
-                matrix=pose_matrix,
-                skin=skin_pred,
-                pad=1,
-                value=1.0,
-            )
-            res['vertices_gt'] = vertices_gt
-            res['vertices_pred'] = vertices_pred
-            res['vertex_loss'] = F.mse_loss(vertices_gt, vertices_pred)
-            
-            eps = 1e-6
-            normalization_loss = 0.
-            for i in range(B):
-                J = num_bones[i].item()
-                for j in range(J):
-                    mask = torch.nonzero(skin_gt[i, :, j] > eps).squeeze(-1)
-                    if mask.size(0) == 0:
-                        continue
-                    _l = F.mse_loss(vertices_gt[i, mask], vertices_pred[i, mask])
-                    normalization_loss += _l / J
-            normalization_loss /= B
-            res['normalization_loss'] = normalization_loss
-        
-        skin_l1_loss = 0.
-        skin_zero_l1_loss = 0.
-        skin_non_zero_l1_loss = 0.
+        skin_pred_list = torch.cat(skin_pred_list, dim=1)
         for i in range(B):
-            J = num_bones[i].item()
-            skin_l1_loss += torch.nn.functional.l1_loss(skin_pred[i, :, :J], skin_gt[i, :, :J], reduce='mean')
-            for j in range(J):
-                mask = skin_gt[i, :, j] < 1e-6
-                if (~mask).any():
-                    skin_non_zero_l1_loss += torch.nn.functional.l1_loss(skin_pred[i, ~mask, j], skin_gt[i, ~mask, j], reduce='mean') / J
-                if mask.any():
-                    skin_zero_l1_loss += torch.nn.functional.l1_loss(skin_pred[i, mask, j], skin_gt[i, mask, j], reduce='mean') / J
-        skin_l1_loss /= B
-        skin_zero_l1_loss /= B
-        skin_non_zero_l1_loss /= B
-        
-        res['skin_l1_loss'] = skin_l1_loss
-        res['skin_zero_l1_loss'] = skin_zero_l1_loss
-        res['skin_non_zero_l1_loss'] = skin_non_zero_l1_loss
-        res['bce_loss'] = (-skin_gt * torch.log(skin_pred + eps) - (1 - skin_gt) * torch.log(1 - skin_pred + eps)).mean()
-        
-        return res
-    
-    def forward(self, data: Dict) -> Dict:
-        return self.training_step(data=data)
+            n = num_bones[i]
+            skin_pred_list[i, :, :n] = skin_pred_list[i, :, :n] * torch.pow(skin_mask[i, :, :n], self.voxel_mask)
+            skin_pred_list[i, :, :n] = skin_pred_list[i, :, :n] / skin_pred_list[i, :, :n].sum(dim=-1, keepdim=True)
+        return skin_pred_list, torch.cat(pack, dim=0)
     
     def predict_step(self, batch: Dict):
         with torch.no_grad():

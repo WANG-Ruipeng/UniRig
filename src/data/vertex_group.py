@@ -410,7 +410,7 @@ def voxel_skin(
     dist, idx = grid_tree.query(grid_coords, grid_query) # 3*3*3
     dist = dist[:, 1:]
     idx = idx[:, 1:]
-    mask = (0 < dist) & (dist < 2/grid*1.733) # sqrt(3)
+    mask = (0 < dist) & (dist < 2/grid*1.001)
     source_grid2grid = np.repeat(np.arange(M), grid_query-1)[mask.ravel()] + N
     to_grid2grid = idx[mask] + N
     weight_grid2grid = dist[mask] * grid_weight
@@ -419,14 +419,14 @@ def voxel_skin(
     dist, idx = vertex_tree.query(vertices, 4)
     dist = dist[:, 1:]
     idx = idx[:, 1:]
-    mask = (0 < dist) & (dist < link_dis*1.733)
+    mask = (0 < dist) & (dist < link_dis*1.001)
     source_close = np.repeat(np.arange(N), 3)[mask.ravel()]
     to_close = idx[mask]
     weight_close = dist[mask]
     
     # link grids to mesh vertices
     dist, idx = vertex_tree.query(grid_coords, vertex_query)
-    mask = (0 < dist) & (dist < 2/grid*1.733) # sqrt(3)
+    mask = (0 < dist) & (dist < 2/grid*1.001) # sqrt(3)
     source_grid2vertex = np.repeat(np.arange(M), vertex_query)[mask.ravel()] + N
     to_grid2vertex = idx[mask]
     weight_grid2vertex = dist[mask]
@@ -464,9 +464,10 @@ def voxel_skin(
     col_indices = np.repeat(unreachable_indices, k).reshape(-1, k)
     dis_vertex2joint[row_indices, col_indices] = dist
     
-    dis_vertex2joint = np.nan_to_num(dis_vertex2joint, nan=0., posinf=0., neginf=0.)
+    finite_vals = dis_vertex2joint[np.isfinite(dis_vertex2joint)]
+    max_dis = np.max(finite_vals)
+    dis_vertex2joint = np.nan_to_num(dis_vertex2joint, nan=max_dis, posinf=max_dis, neginf=max_dis)
     dis_vertex2joint = np.maximum(dis_vertex2joint, 1e-6)
-    max_dis = np.max(dis_vertex2joint)
     # (J, N)
     if mode == 'exp':
         skin = np.exp(-dis_vertex2joint / max_dis * 20.0)

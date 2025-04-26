@@ -6,7 +6,7 @@ import os
 import torch
 import numpy as np
 from torch import Tensor, FloatTensor, LongTensor
-from typing import Dict, Union, List
+from typing import Dict, Union, List, Literal
 from lightning.pytorch.callbacks import BasePredictionWriter
 
 from numpy import ndarray
@@ -118,13 +118,24 @@ class SkinWriter(BasePredictionWriter):
             J = num_bones[id]
             F = num_faces[id]
             o_vertices = vertices[id, :N]
+
+            _parents = parents_list[id]
+            parents = []
+            for i in range(J):
+                if _parents[i] == -1:
+                    parents.append(None)
+                else:
+                    parents.append(_parents[i])
+
             skin_resampled = reskin(
                 sampled_vertices=sampled_vertices[id],
                 vertices=o_vertices,
+                parents=parents,
                 faces=faces[id, :F],
                 sampled_skin=skin_pred,
+                sample_method='median',
                 alpha=2.0,
-                threshold=0.05
+                threshold=0.03,
             )
             
             def make_path(save_name: str, suffix: str, trim: bool=False):
@@ -148,13 +159,6 @@ class SkinWriter(BasePredictionWriter):
             if self.export_fbx is not None:
                 try:
                     exporter = Exporter()
-                    _parents = parents_list[id]
-                    parents = []
-                    for i in range(J):
-                        if _parents[i] == -1:
-                            parents.append(None)
-                        else:
-                            parents.append(_parents[i])
                     names = RawData.load(path=os.path.join(paths[id], data_names[id])).names
                     if names is None:
                         names = [f"bone_{i}" for i in range(J)]
@@ -188,86 +192,68 @@ class SkinWriter(BasePredictionWriter):
 def reskin(
     sampled_vertices: ndarray,
     vertices: ndarray,
+    parents: List[Union[None, int]],
     faces: ndarray,
     sampled_skin: ndarray,
+    sample_method: Literal['mean', 'median']='mean',
     **kwargs,
 ) -> ndarray:
-    nearest_samples = kwargs.get('nearest_samples', 5)
-    iter_steps = kwargs.get('iter_steps', 2)
-    link_same = kwargs.get('link_same', True)
+    nearest_samples = kwargs.get('nearest_samples', 7)
+    iter_steps = kwargs.get('iter_steps', 1)
     threshold = kwargs.get('threshold', 0.01)
     alpha = kwargs.get('alpha', 2)
     
-    N = vertices.shape[0]
-    tree = cKDTree(sampled_vertices)
-    dis, nearest = tree.query(vertices, k=nearest_samples, p=2)
-    # weighted sum
-    weights = np.exp(-alpha * dis)  # (N, nearest_samples)
-    weight_sum = weights.sum(axis=1, keepdims=True)
-    sampled_skin_nearest = sampled_skin[nearest]
-    skin = (sampled_skin_nearest * weights[..., np.newaxis]).sum(axis=1) / weight_sum
+    assert sample_method in ['mean', 'median']
     
+    N = vertices.shape[0]
+    J = sampled_skin.shape[1]
+    if sample_method == 'mean':
+        tree = cKDTree(sampled_vertices)
+        dis, nearest = tree.query(vertices, k=nearest_samples, p=2)
+        # weighted sum
+        weights = np.exp(-alpha * dis)  # (N, nearest_samples)
+        weight_sum = weights.sum(axis=1, keepdims=True)
+        sampled_skin_nearest = sampled_skin[nearest]
+        skin = (sampled_skin_nearest * weights[..., np.newaxis]).sum(axis=1) / weight_sum
+    elif sample_method == 'median':
+        tree = cKDTree(sampled_vertices)
+        dis, nearest = tree.query(vertices, k=nearest_samples, p=2)
+        skin = np.median(sampled_skin[nearest], axis=1)
+    else:
+        assert 0
+    
+    # (from, to)
     edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]], axis=0)
-
-    # link gaps between parts
-    source_indices = None
-    if link_same:
-        # Create sparse adjacency matrix
-        row = np.concatenate([edges[:, 0], edges[:, 1]])
-        col = np.concatenate([edges[:, 1], edges[:, 0]])
-        data = np.zeros_like(row, dtype=bool)
-        mask = csr_matrix((data, (row, col)), shape=(N, N))
-        mask[faces[:, 0], faces[:, 1]] ^= True
-        mask[faces[:, 1], faces[:, 0]] ^= True
-        mask[faces[:, 1], faces[:, 2]] ^= True
-        mask[faces[:, 2], faces[:, 1]] ^= True
-        mask[faces[:, 2], faces[:, 0]] ^= True
-        mask[faces[:, 0], faces[:, 2]] ^= True
-        mask_on_boundry = mask.sum(axis=1) > 0
-        
-        # Get vertices with edges (boundary vertices)
-        mask_boundry_vertices = np.where(mask_on_boundry)[0]
-        m = len(mask_boundry_vertices)
-        
-        if m > 0:
-            # Map between full vertex indices and masked subset
-            map_back = mask_boundry_vertices
-            map_to = np.zeros(N, dtype=int)
-            map_to[mask_boundry_vertices] = np.arange(m)
-            
-            # Calculate distances only for masked vertices
-            masked_vertices = vertices[mask_boundry_vertices]
-            tree_edge = cKDTree(masked_vertices)
-            
-            # Find nearest neighbors
-            dis, nearest = tree_edge.query(masked_vertices, k=1, p=2)
-            source_indices = np.arange(m)
-            target_indices = nearest
-            
-            source_indices = ((masked_vertices[source_indices] - masked_vertices[target_indices])**2).sum(axis=1) < 1e-10
-            new_edges = np.stack([map_back[source_indices], map_back[target_indices[source_indices]]], axis=1)
-            edges = np.concatenate([edges, new_edges], axis=0)
-
     edges = np.concatenate([edges, edges[:, [1, 0]]], axis=0) # (2*F*3, 2)
 
     # diffusion in neighbours
     for _ in range(iter_steps):
-        neighbor_skin = np.zeros_like(skin)  # (N, J)
-        neighbor_co = np.zeros((N, 1), dtype=np.float32)
+        sum_skin = skin.copy()
+        for i in reversed(range(J)):
+            p = parents[i]
+            if p is None:
+                continue
+            sum_skin[:, p] += sum_skin[:, i]
+        # (2*F*3, J)
+        # only transfer from hotter to cooler
+        mask = sum_skin[edges[:, 1]] < sum_skin[edges[:, 0]]
+        neighbor_skin = np.zeros_like(sum_skin)  # (N, J)
+        neighbor_co = np.zeros((N, J), dtype=np.float32)
 
         dis = np.sqrt(((vertices[edges[:, 1]] - vertices[edges[:, 0]])**2).sum(axis=1, keepdims=True))
         co = np.exp(-dis * alpha)
 
-        neighbor_skin[edges[:, 1]] += skin[edges[:, 0]] * co
-        neighbor_co[edges[:, 1]] += co
+        neighbor_skin[edges[:, 1]] += sum_skin[edges[:, 0]] * co * mask
+        neighbor_co[edges[:, 1]] += co * mask
 
-        skin = (skin + neighbor_skin) / (1. + neighbor_co)
-    if link_same and source_indices is not None:
-        # guarantee continuity at the boundry
-        g = (skin[mask_boundry_vertices][source_indices] + skin[mask_boundry_vertices][target_indices]) / 2
-        skin[mask_boundry_vertices] = g
-    
-    skin = skin / skin.sum(axis=-1, keepdims=True)
+        sum_skin = (sum_skin + neighbor_skin) / (1. + neighbor_co)
+        for i in range(J):
+            p = parents[i]
+            if p is None:
+                continue
+            sum_skin[:, p] -= sum_skin[:, i]
+            skin = sum_skin / sum_skin.sum(axis=-1, keepdims=True)
+
     # avoid 0-skin
     mask = (skin>=threshold).any(axis=-1, keepdims=True)
     skin[(skin<threshold)&mask] = 0.

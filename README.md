@@ -10,9 +10,9 @@
 
 ![teaser](assets/doc/unirig_teaser.png)
 
-This repository contains the official implementation for the **UniRig** framework, a unified solution for automatic 3D model rigging, developed by Tsinghua University and [Tripo](https://www.tripo3d.ai).
+This repository contains the official implementation for the **SIGGRAPH'25 (TOG) UniRig** framework, a unified solution for automatic 3D model rigging, developed by Tsinghua University and [Tripo](https://www.tripo3d.ai).
 
-**Paper:** [One Model to Rig Them All: Diverse Skeleton Rigging with UniRig](https://arxiv.org)
+**Paper:** [One Model to Rig Them All: Diverse Skeleton Rigging with UniRig](https://arxiv.org/abs/2504.12451)
 
 ## Overview
 
@@ -33,7 +33,7 @@ This repository provides the code implementation for the entire framework vision
 
 *   **Unified Model:** Aims to handle diverse model categories (humans, animals, objects) with a single framework.
 *   **Automated Skeleton Generation:** Predicts topologically valid skeleton structures. **(✅ Available in current release)**
-*   **Automated Skinning Prediction:** Predicts per-vertex skinning weights. **(⏳ Coming Soon)**
+*   **Automated Skinning Prediction:** Predicts per-vertex skinning weights. **(✅ Available in current release)**
 *   **Bone Attribute Prediction:** Predicts attributes like stiffness for physics-based secondary motion. **(⏳ Coming Soon)**
 *   **High Accuracy & Robustness:** Achieves state-of-the-art results on challenging datasets (as shown in the paper with Rig-XL/VRoid training).
 *   **Efficient Tokenization:** Uses Skeleton Tree Tokenization for compact representation and efficient processing.
@@ -45,10 +45,9 @@ We are open-sourcing UniRig progressively. Please note the current status:
 
 **Available Now (Initial Release):**
 *   ✅ **Code:** Implementation for skeleton and skinning prediction.
-*   ✅ **Model:** Skeleton Prediction checkpoint trained on [**Articulation-XL2.0**](https://huggingface.co/datasets/Seed3D/Articulation-XL2.0). Available on [Hugging Face](https://huggingface.co/VAST-AI/UniRig).
+*   ✅ **Model:** Skeleton & Skinning Prediction checkpoint trained on [**Articulation-XL2.0**](https://huggingface.co/datasets/Seed3D/Articulation-XL2.0). Available on [Hugging Face](https://huggingface.co/VAST-AI/UniRig).
 
 **Planned Future Releases:**
-*   ⏳ Skinning Weight Prediction Model checkpoint(s).
 *   ⏳ Release of the **Rig-XL** and **VRoid** datasets used in the paper.
 *   ⏳ Full UniRig model checkpoints (Skeleton + Skinning) trained on Rig-XL/VRoid, replicating the paper's main results.
 
@@ -111,17 +110,27 @@ bash launch/inference/generate_skeleton.sh --input examples/giraffe.glb --output
 
 Supported input formats: `.obj`, `.fbx`, `.glb`, and `.vrm`
 
-### Skinning Weight Prediction (Coming Soon)
+### Skinning Weight Prediction (Available Now)
 ```bash
-# Will be available in a future release
+# Skin a single file
+bash launch/inference/generate_skin.sh --input examples/skeleton/giraffe.fbx --output results/giraffe_skin.fbx
+
+# Process multiple files in a directory
+bash launch/inference/generate_skin.sh --input_dir <your_input_directory> --output_dir <your_output_directory>
 ```
+
+Note that the command above uses an **edited-version** from skeleton phase. The results may degrade significantly if the skeleton is inaccurate — for example, if tail bones or wing bones are missing. Therefore, it is recommended to refine the skeleton before performing skinning in order to achieve better results.
 
 ### Merge the Predicted Results
 
 Combine the predicted skeleton with your original 3D model to create a fully rigged asset:
 
 ```bash
+# Merge skeleton from skeleton prediction
 bash launch/inference/merge.sh --source results/giraffe_skeleton.fbx --target examples/giraffe.glb --output results/giraffe_rigged.glb
+
+# Or merge skin from skin prediction
+bash launch/inference/merge.sh --source results/giraffe_skin.fbx --target examples/giraffe.glb --output results/giraffe_rigged.glb
 ```
 
 ## Models
@@ -135,7 +144,12 @@ Available models are hosted on the: https://huggingface.co/VAST-AI/UniRig
 ## Citation
 
 ```
-
+@article{zhang2025unirig,
+  title={One Model to Rig Them All: Diverse Skeleton Rigging with UniRig},
+  author={Zhang, Jia-Peng and Pu, Cheng-Feng and Guo, Meng-Hao and Cao, Yan-Pei and Hu, Shi-Min},
+  journal={arXiv preprint arXiv:2504.12451},
+  year={2025}
+}
 ```
 
 ## Acknowledgements

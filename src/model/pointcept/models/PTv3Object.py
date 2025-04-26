@@ -512,6 +512,7 @@ class Embedding(PointModule):
         embed_channels,
         norm_layer=None,
         act_layer=None,
+        res_linear=False,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -533,12 +534,17 @@ class Embedding(PointModule):
         if act_layer is not None:
             self.stem.add(act_layer(), name="act")
         
-        self.res_linear = nn.Linear(in_channels, embed_channels)
+        if res_linear:
+            self.res_linear = nn.Linear(in_channels, embed_channels)
+        else:
+            self.res_linear = None
 
     def forward(self, point: Point):
-        res_feature = self.res_linear(point.feat)
+        if self.res_linear:
+            res_feature = self.res_linear(point.feat)
         point = self.stem(point)
-        point.feat = point.feat + res_feature
+        if self.res_linear:
+            point.feat = point.feat + res_feature
         point.sparse_conv_feat = point.sparse_conv_feat.replace_feature(point.feat)
         return point
 
@@ -568,6 +574,7 @@ class PointTransformerV3Object(PointModule):
         cls_mode=False,
         enable_qknorm=False,
         layer_norm=False,
+        res_linear=True,
     ):
         super().__init__()
         self.num_stages = len(enc_depths)
@@ -581,7 +588,6 @@ class PointTransformerV3Object(PointModule):
         else:
             print("WARNING: use BatchNorm in ptv3obj !!!")
             bn_layer = partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01)
-            assert 0
         ln_layer = nn.LayerNorm
         # activation layers
         act_layer = nn.GELU
@@ -591,6 +597,7 @@ class PointTransformerV3Object(PointModule):
             embed_channels=enc_channels[0],
             norm_layer=bn_layer,
             act_layer=act_layer,
+            res_linear=res_linear,
         )
 
         # encoder
@@ -649,9 +656,9 @@ def get_encoder(pretrained_path: Union[str, None]=None, freeze_encoder: bool=Fal
         checkpoint = torch.load(pretrained_path)
         state_dict = checkpoint["state_dict"]
         state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-        point_encoder.load_state_dict(state_dict)
+        point_encoder.load_state_dict(state_dict, strict=False)
     if freeze_encoder is True:
         for name, param in point_encoder.named_parameters():
-            if 'res_linear' not in name:
+            if 'res_linear' not in name and 'qknorm' not in name:
                 param.requires_grad = False
     return point_encoder
