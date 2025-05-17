@@ -153,13 +153,13 @@ class Asset(Exporter):
             matrix_local[:, 2, 2] = 1.
             matrix_local[:, 3, 3] = 1.
             for i in range(self.J):
-                matrix_local[i, :3, 3] = self.joints[i]
+                matrix_local[i, :3, 3] = self.joints[i].copy()
         
         matrix = self.get_matrix(matrix_basis=matrix_basis, matrix_local=matrix_local)
-        self.joints = matrix[:, :3, 3]
+        self.joints = matrix[:, :3, 3].copy()
         vertices = linear_blend_skinning(self.vertices, matrix_local, matrix, self.skin, pad=1, value=1.)
         # update matrix_local
-        self.matrix_local = matrix
+        self.matrix_local = matrix.copy()
 
         # change tails
         if self.tails is not None:

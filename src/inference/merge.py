@@ -149,26 +149,29 @@ def axis(a: np.ndarray):
     return b
 
 def get_correct_orientation_kdtree(a: np.ndarray, b: np.ndarray, bones: np.ndarray, num: int=16384) -> np.ndarray:
-    tree = cKDTree(b[np.random.permutation(b.shape[0])[:num]])
-    
+    '''
+    a: sampled_vertiecs
+    b: mesh_vertices
+    '''
     min_loss = float('inf')
     best_transformed = a.copy()
     axis_permutations = list(itertools.permutations([0, 1, 2]))
     sign_combinations = [(x, y, z) for x in [1, -1] 
                         for y in [1, -1] 
                         for z in [1, -1]]
+    _bones = bones.copy()
     for perm in axis_permutations:
         permuted_a = a[np.random.permutation(a.shape[0])[:num]][:, perm]
         for signs in sign_combinations:
             transformed = permuted_a * np.array(signs)
-            distances, indices = tree.query(transformed)
+            tree = cKDTree(transformed)
+            distances, indices = tree.query(b)
             current_loss = distances.mean()
             if current_loss < min_loss: # prevent from mirroring
                 min_loss = current_loss
                 best_transformed = a[:, perm] * np.array(signs)
-                bones[:, :3] = bones[:, :3][:, perm] * np.array(signs)
-                bones[:, 3:] = bones[:, 3:][:, perm] * np.array(signs)
-                print(current_loss, perm, signs)
+                bones[:, :3] = _bones[:, :3][:, perm] * np.array(signs)
+                bones[:, 3:] = _bones[:, 3:][:, perm] * np.array(signs)
     
     return best_transformed, bones
 
@@ -200,8 +203,11 @@ def make_armature(
     for ob in bpy.data.objects:
         if ob.type != 'MESH':
             continue
+        m = np.array(ob.matrix_world)
+        matrix_world_rot = m[:3, :3]
+        matrix_world_bias = m[:3, 3]
         for v in ob.data.vertices:
-            mesh_vertices.append(np.array(v.co))
+            mesh_vertices.append(matrix_world_rot @ np.array(v.co) + matrix_world_bias)
 
     mesh_vertices = np.stack(mesh_vertices)
     vertices, bones = denormalize_vertices(mesh_vertices, vertices, bones)
@@ -238,7 +244,6 @@ def make_armature(
         bone.use_connect = False # always False currently
 
     vertices, bones = get_correct_orientation_kdtree(vertices, mesh_vertices, bones)
-    
     for i in range(J):
         if add_root:
             pname = 'Root' if parents[i] is None else names[parents[i]]
@@ -268,8 +273,11 @@ def make_armature(
             vis.append(x.name)
         
         n_vertices = []
+        m = np.array(ob.matrix_world)
+        matrix_world_rot = m[:3, :3]
+        matrix_world_bias = m[:3, 3]
         for v in ob.data.vertices:
-            n_vertices.append(np.array(v.co))
+            n_vertices.append(matrix_world_rot @ np.array(v.co) + matrix_world_bias)
         n_vertices = np.stack(n_vertices)
 
         _, index = tree.query(n_vertices)
@@ -348,7 +356,9 @@ def merge(
         is_vrm=is_vrm,
     )
     
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    dirpath = os.path.dirname(output_path)
+    if dirpath != '':
+        os.makedirs(dirpath, exist_ok=True)
     try:
         if is_vrm:
             bpy.ops.export_scene.vrm(filepath=output_path)

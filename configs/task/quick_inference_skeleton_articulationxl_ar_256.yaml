@@ -27,4 +27,4 @@ trainer:
   devices: 1
   precision: bf16-mixed
   accelerator: gpu
-  strategy: ddp
+  strategy: auto
