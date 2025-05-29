@@ -3,13 +3,29 @@ from torch import nn, FloatTensor, LongTensor
 import numpy as np
 from torch.nn.functional import pad
 from typing import Dict, List, Union
-from transformers import AutoModelForCausalLM, AutoConfig
+from transformers import AutoModelForCausalLM, AutoConfig, LogitsProcessor, LogitsProcessorList
 
 from .spec import ModelSpec, ModelInput
 from .parse_encoder import MAP_MESH_ENCODER, get_mesh_encoder
 
-from ..tokenizer.spec import TokenizerSpec, DetokenzeOutput
+from ..tokenizer.spec import TokenizerSpec, DetokenizeOutput
 from copy import deepcopy
+
+class VocabSwitchingLogitsProcessor(LogitsProcessor):
+    def __init__(self, tokenizer: TokenizerSpec, start_tokens: LongTensor):
+        self.tokenizer = tokenizer
+        self.start_tokens = start_tokens
+        assert start_tokens.ndim == 1
+
+    def __call__(self, input_ids: LongTensor, scores: FloatTensor) -> FloatTensor:
+        # input_ids shape: (batch_size, seq_len)
+        for batch_idx, sequence in enumerate(input_ids):
+            mask = torch.full_like(scores[batch_idx], float('-inf'))
+            sequence = torch.cat([self.start_tokens, sequence])
+            tokens = self.tokenizer.next_posible_token(ids=sequence.detach().cpu().numpy())
+            mask[tokens] = 0
+            scores[batch_idx] = scores[batch_idx] + mask
+        return scores
 
 class UniRigAR(ModelSpec):
     
@@ -116,7 +132,7 @@ class UniRigAR(ModelSpec):
         normals: FloatTensor,
         cls: Union[str, None]=None,
         **kwargs,
-    ) -> DetokenzeOutput:
+    ) -> DetokenizeOutput:
         '''
         Do not support batch!
         '''
@@ -126,16 +142,22 @@ class UniRigAR(ModelSpec):
         
         if cls is not None:
             start_tokens.append(self.tokenizer.cls_name_to_token(cls=cls))
+        start_tokens = torch.tensor(start_tokens).to(cond.device)
         start_embed = self.transformer.get_input_embeddings()(
-            torch.tensor(start_tokens, dtype=torch.long, device=cond.device).unsqueeze(0)
+            start_tokens.unsqueeze(0)
         ).to(dtype=self.transformer.dtype)
         cond = torch.cat([cond, start_embed], dim=1)
         
+        processor = VocabSwitchingLogitsProcessor(
+            tokenizer=self.tokenizer,
+            start_tokens=start_tokens,
+        )
         results = self.transformer.generate(
             inputs_embeds=cond,
             bos_token_id=self.tokenizer.bos,
             eos_token_id=self.tokenizer.eos,
             pad_token_id=self.tokenizer.pad,
+            logits_processor=LogitsProcessorList([processor]),
             **kwargs,
         )
         output_ids = results[0, :]

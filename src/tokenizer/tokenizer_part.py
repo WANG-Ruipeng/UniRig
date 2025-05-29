@@ -3,7 +3,7 @@ from numpy import ndarray
 
 from typing import Dict, Tuple, Union, List
 
-from .spec import TokenizerSpec, TokenizeInput, DetokenzeOutput, TokenizerConfig
+from .spec import TokenizerSpec, TokenizeInput, DetokenizeOutput, TokenizerConfig
 from .spec import make_skeleton
 from ..data.order import get_order
 
@@ -61,7 +61,128 @@ class TokenizerPart(TokenizerSpec):
     def part_name_to_token(self, part: str) -> int:
         assert part in self.parts_token_id, f"do not find part name    `{part}` in tokenizer"
         return self.parts_token_id[part]
-        
+    
+    def next_posible_token(self, ids: ndarray) -> List[int]:
+        if ids.shape[0] == 0 or ids.ndim == 0:
+            return [self.token_id_bos]
+        assert ids.ndim == 1, "expect an array"
+        state = 'expect_bos'
+        for id in ids:
+            if state == 'expect_bos':
+                assert id == self.token_id_bos, 'ids do not start with bos'
+                state = 'expect_cls_or_part_or_joint'
+            elif state == 'expect_cls_or_part_or_joint':
+                if id < self.num_discrete:
+                    state = 'expect_joint_2'
+                elif id == self.token_id_cls_none or id in self.cls_token_id.values():
+                    state = 'expect_part_or_joint'
+                else: # a part
+                    state = 'expect_joint'
+            elif state == 'expect_part_or_joint':
+                if id < self.num_discrete:
+                    state = 'expect_joint_2'
+                else:
+                    state = 'expect_part_or_joint'
+            elif state == 'expect_joint_2':
+                state = 'expect_joint_3'
+            elif state == 'expect_joint_3':
+                state = 'expect_branch_or_part_or_joint'
+            elif state == 'expect_branch_or_part_or_joint':
+                if id == self.token_id_branch:
+                    state = 'expect_joint'
+                elif id < self.num_discrete:
+                    state = 'expect_joint_2'
+                else: # find a part
+                    state = 'expect_joint'
+            elif state == 'expect_joint':
+                state = 'expect_joint_2'
+            else:
+                assert 0, state
+        s = []
+        def add_cls():
+            s.append(self.token_id_cls_none)
+            for v in self.cls_token_id.values():
+                s.append(v)
+        def add_part():
+            s.append(self.token_id_spring)
+            for v in self.parts_token_id.values():
+                s.append(v)
+        def add_joint():
+            for i in range(self.num_discrete):
+                s.append(i)
+        def add_branch():
+            s.append(self.token_id_branch)
+        def add_eos():
+            s.append(self.token_id_eos)
+        def add_bos():
+            s.append(self.token_id_bos)
+        if state == 'expect_bos':
+            add_bos()
+        elif state == 'expect_cls_or_part_or_joint':
+            add_cls()
+            add_part()
+            add_joint()
+        elif state == 'expect_cls':
+            add_cls()
+        elif state == 'expect_part_or_joint':
+            add_part()
+            add_joint()
+            add_eos()
+        elif state == 'expect_joint_2':
+            add_joint()
+        elif state == 'expect_joint_3':
+            add_joint()
+        elif state == 'expect_branch_or_part_or_joint':
+            add_joint()
+            add_part()
+            add_branch()
+            add_eos()
+        elif state == 'expect_joint':
+            add_joint()
+        else:
+            assert 0, state
+        return s
+    
+    def bones_in_sequence(self, ids: ndarray):
+        assert ids.ndim == 1, "expect an array"
+        s = 0
+        state = 'expect_bos'
+        for id in ids:
+            if state == 'expect_bos':
+                assert id == self.token_id_bos, 'ids do not start with bos'
+                state = 'expect_cls_or_part_or_joint'
+            elif state == 'expect_cls_or_part_or_joint':
+                if id < self.num_discrete:
+                    state = 'expect_joint_2'
+                elif id == self.token_id_cls_none or id in self.cls_token_id.values():
+                    state = 'expect_part_or_joint'
+                else: # a part
+                    state = 'expect_joint'
+            elif state == 'expect_part_or_joint':
+                if id < self.num_discrete:
+                    state = 'expect_joint_2'
+                else:
+                    state = 'expect_part_or_joint'
+            elif state == 'expect_joint_2':
+                state = 'expect_joint_3'
+            elif state == 'expect_joint_3':
+                s += 1
+                state = 'expect_branch_or_part_or_joint'
+            elif state == 'expect_branch_or_part_or_joint':
+                if id == self.token_id_branch:
+                    state = 'expect_joint'
+                elif id < self.num_discrete:
+                    state = 'expect_joint_2'
+                else: # find a part
+                    state = 'expect_joint'
+            elif state == 'expect_joint':
+                state = 'expect_joint_2'
+            else:
+                assert 0, state
+            if id == self.token_id_eos:
+                break
+        return s
+    
     def tokenize(self, input: TokenizeInput) -> ndarray:
         num_bones = input.num_bones
         bones = discretize(t=input.bones, continuous_range=self.continuous_range, num_discrete=self.num_discrete)
@@ -101,7 +222,7 @@ class TokenizerPart(TokenizerSpec):
         return np.array(tokens, dtype=np.int64)
             
 
-    def detokenize(self, ids: ndarray, **kwargs) -> DetokenzeOutput:
+    def detokenize(self, ids: ndarray, **kwargs) -> DetokenizeOutput:
         assert isinstance(ids, ndarray), 'expect ids to be ndarray'
         if ids[0] != self.token_id_bos:
             raise ValueError(f"first token is not bos")
@@ -119,6 +240,7 @@ class TokenizerPart(TokenizerSpec):
         is_branch = False
         last_joint = None
         num_bones = 0
+        cls = None
         while i < len(ids):
             if ids[i] < self.num_discrete:
                 if is_branch:
@@ -179,7 +301,7 @@ class TokenizerPart(TokenizerSpec):
             names = self.order.make_names(cls=cls, parts=parts, num_bones=num_bones)
         else:
             names = [f"bone_{i}" for i in range(num_bones)]
-        return DetokenzeOutput(
+        return DetokenizeOutput(
             tokens=ids,
             parents=parents,
             bones=bones,

@@ -12,7 +12,7 @@ from numpy import ndarray
 from ..data.raw_data import RawData
 from ..data.order import OrderConfig, get_order
 from ..model.spec import ModelSpec
-from ..tokenizer.spec import DetokenzeOutput
+from ..tokenizer.spec import DetokenizeOutput
 
 class ARSystem(L.LightningModule):
     
@@ -49,7 +49,7 @@ class ARSystem(L.LightningModule):
     
     def predict_step(self, batch, batch_idx, dataloader_idx=None):
         try:
-            prediction: List[DetokenzeOutput] = self._predict_step(batch=batch, batch_idx=batch_idx, dataloader_idx=dataloader_idx)
+            prediction: List[DetokenizeOutput] = self._predict_step(batch=batch, batch_idx=batch_idx, dataloader_idx=dataloader_idx)
             return prediction
         except Exception as e:
             print(str(e))
@@ -90,7 +90,7 @@ class ARWriter(BasePredictionWriter):
     def write_on_batch_end(self, trainer, pl_module: ARSystem, prediction: List[Dict], batch_indices, batch, batch_idx, dataloader_idx):
         assert 'path' in batch
         paths = batch['path']
-        detokenize_output_list: List[DetokenzeOutput] = prediction
+        detokenize_output_list: List[DetokenizeOutput] = prediction
         vertices = batch['vertices']
         
         origin_vertices = batch['origin_vertices']
@@ -114,7 +114,7 @@ class ARWriter(BasePredictionWriter):
             num_faces = num_faces.detach().cpu().numpy()
 
         for (id, detokenize_output) in enumerate(detokenize_output_list):
-            assert isinstance(detokenize_output, DetokenzeOutput), f"expect item of the list to be DetokenzeOutput, found: {type(detokenize_output)}"
+            assert isinstance(detokenize_output, DetokenizeOutput), f"expect item of the list to be DetokenizeOutput, found: {type(detokenize_output)}"
             def make_path(save_name: str, suffix: str, trim: bool=False):
                 if trim:
                     path = os.path.relpath(paths[id], self.npz_dir)

@@ -74,6 +74,8 @@ def load(filepath: str, return_armature: bool=False):
                 set_armature_bone_shape_to_default=True,
                 disable_bake=True, # customized option for better performance
             )
+        elif filepath.endswith(".obj"):
+            bpy.ops.wm.obj_import(filepath=filepath)
         elif filepath.endswith(".fbx") or filepath.endswith(".FBX"):
             bpy.ops.import_scene.fbx(filepath=filepath, ignore_leaf_bones=False, use_image_search=False)
         elif filepath.endswith(".glb") or filepath.endswith(".gltf"):
@@ -201,6 +203,7 @@ def make_armature(
     
     mesh_vertices = []
     for ob in bpy.data.objects:
+        print(ob.name)
         if ob.type != 'MESH':
             continue
         m = np.array(ob.matrix_world)
