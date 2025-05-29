@@ -70,7 +70,7 @@ class TokenizeInput():
         return self.bones.shape[0]
 
 @dataclass(frozen=True)
-class DetokenzeOutput(Exporter):
+class DetokenizeOutput(Exporter):
     # original tokens
     tokens: ndarray
 
@@ -109,6 +109,10 @@ class DetokenzeOutput(Exporter):
     @property
     def num_bones(self):
         return self.bones.shape[0]    
+    
+    @property
+    def J(self):
+        return self.bones.shape[0]
     
     def _get_parents(self) -> List[Union[int, None]]:
         parents = []
@@ -149,7 +153,7 @@ class TokenizerSpec(ABC):
     def tokenize(self, input: TokenizeInput) -> ndarray:
         pass
 
-    def detokenize(self, ids: ndarray, **kwargs) -> DetokenzeOutput:
+    def detokenize(self, ids: ndarray, **kwargs) -> DetokenizeOutput:
         raise NotImplementedError("{} has no method 'detokenize'".format(type(self).__name__))
     
     @abstractmethod
@@ -192,6 +196,12 @@ class TokenizerSpec(ABC):
     @property
     @abstractmethod
     def continuous_range(self) -> Tuple[float, float]:
+        pass
+    
+    def next_posible_token(self, ids: ndarray) -> List[int]:
+        pass
+    
+    def bones_in_sequence(self, ids: ndarray) -> int:
         pass
 
 def make_skeleton(
