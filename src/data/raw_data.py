@@ -7,7 +7,7 @@ from typing import Union, List, Tuple
 
 from .exporter import Exporter
 
-from ..tokenizer.spec import DetokenzeOutput
+from ..tokenizer.spec import DetokenizeOutput
 from .order import Order
 
 @dataclass(frozen=True)
@@ -202,7 +202,7 @@ class RawSkeleton(Exporter):
         np.savez(file=path, **self.__dict__)
     
     @staticmethod
-    def from_detokenize_output(res: DetokenzeOutput, order: Union[Order, None]) -> 'RawSkeleton':
+    def from_detokenize_output(res: DetokenizeOutput, order: Union[Order, None]) -> 'RawSkeleton':
         J = len(res.bones)
         names = order.make_names(cls=res.cls, parts=res.parts, num_bones=J)
         joints = res.joints
