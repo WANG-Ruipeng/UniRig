@@ -63,7 +63,7 @@ if __name__ == "__main__":
     
     task = load('task', args.task)
     mode = task.mode
-    assert mode in ['predict']
+    assert mode in ['predict', 'validate']
     
     if args.input is not None or args.input_dir is not None:
         assert args.output_dir is not None or args.output is not None, 'output or output_dir must be specified'
@@ -106,6 +106,16 @@ if __name__ == "__main__":
     predict_transform_config = transform_config.get('predict_transform_config', None)
     if predict_transform_config is not None:
         predict_transform_config = TransformConfig.parse(config=predict_transform_config)
+        
+    # get validate dataset
+    validate_dataset_config = data_config.get('validate_dataset_config', None)
+    if validate_dataset_config is not None:
+        validate_dataset_config = DatasetConfig.parse(config=validate_dataset_config).split_by_cls()
+    
+    # get validate transform
+    validate_transform_config = transform_config.get('validate_transform_config', None)
+    if validate_transform_config is not None:
+        validate_transform_config = TransformConfig.parse(config=validate_transform_config)
     
     # get model
     model_config = task.components.get('model', None)
@@ -124,6 +134,8 @@ if __name__ == "__main__":
         process_fn=None if model is None else model._process_fn,
         predict_dataset_config=predict_dataset_config,
         predict_transform_config=predict_transform_config,
+        validate_dataset_config=validate_dataset_config,
+        validate_transform_config=validate_transform_config,
         tokenizer_config=tokenizer_config,
         debug=False,
         data_name=data_name,
@@ -182,5 +194,7 @@ if __name__ == "__main__":
     if mode == 'predict':
         assert resume_from_checkpoint is not None, 'expect resume_from_checkpoint in task'
         trainer.predict(system, datamodule=data, ckpt_path=resume_from_checkpoint, return_predictions=False)
+    elif mode == 'validate':
+        trainer.validate(system, datamodule=data, ckpt_path=resume_from_checkpoint)
     else:
         assert 0
