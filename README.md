@@ -133,6 +133,20 @@ bash launch/inference/merge.sh --source results/giraffe_skeleton.fbx --target ex
 bash launch/inference/merge.sh --source results/giraffe_skin.fbx --target examples/giraffe.glb --output results/giraffe_rigged.glb
 ```
 
+### Rignet Dataset Validation
+
+Validate the metrics mentioned in the paper. This is for academic usage.
+
+First, Download the processed dataset from [Hugging Face](https://huggingface.co/VAST-AI/UniRig/blob/main/data/rignet/processed.zip) and extract it to the `dataset_clean`.
+
+Then run the following command:
+
+```bash
+python run.py --task=configs/task/validate_rignet.yaml
+```
+
+To export skeleton & mesh, set `record_res` to `True` in the config file `configs/system/ar_validate_rignet.yaml`.
+
 ## Models
 
 Available models are hosted on the: https://huggingface.co/VAST-AI/UniRig

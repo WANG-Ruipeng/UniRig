@@ -1,7 +1,7 @@
 from copy import deepcopy
 from dataclasses import dataclass
 import lightning.pytorch as pl
-# from lightning.pytorch.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
+from lightning.pytorch.utilities.types import EVAL_DATALOADERS
 import torch
 from torch import LongTensor
 from torch.utils import data
@@ -68,7 +68,9 @@ class UniRigDatasetModule(pl.LightningDataModule):
         self,
         process_fn: Union[Callable[[List[ModelInput]], Dict]]=None,
         predict_dataset_config: Union[Dict[str, DatasetConfig], None]=None,
+        validate_dataset_config: Union[Dict[str, DatasetConfig], None]=None,
         predict_transform_config: Union[TransformConfig, None]=None,
+        validate_transform_config: Union[TransformConfig, None]=None,
         tokenizer_config: Union[TokenizerConfig, None]=None,
         debug: bool=False,
         data_name: str='raw_data.npz',
@@ -78,13 +80,24 @@ class UniRigDatasetModule(pl.LightningDataModule):
         super().__init__()
         self.process_fn                 = process_fn
         self.predict_dataset_config     = predict_dataset_config
+        self.validate_dataset_config    = validate_dataset_config
         self.predict_transform_config   = predict_transform_config
+        self.validate_transform_config  = validate_transform_config
         self.tokenizer_config           = tokenizer_config
         self.debug                      = debug
         self.data_name                  = data_name
         
         if debug:
             print("\033[31mWARNING: debug mode, dataloader will be extremely slow !!!\033[0m")
+        
+        # build validate datapath
+        if self.validate_dataset_config is not None:
+            self.validate_datapath = {
+                cls: Datapath(self.validate_dataset_config[cls].datapath_config)
+                for cls in self.validate_dataset_config
+            }
+        else:
+            self.validate_datapath = None
         
         if datapath is not None:
             self.train_datapath = None
@@ -134,6 +147,19 @@ class UniRigDatasetModule(pl.LightningDataModule):
                     debug=self.debug,
                     data_name=self.data_name,
                 )
+        
+        if self.validate_datapath is not None:
+            self._validation_ds = {}
+            for cls in self.validate_datapath:
+                self._validation_ds[cls] = UniRigDataset(
+                    process_fn=self.process_fn,
+                    data=self.validate_datapath[cls].get_data(),
+                    name=f"validate-{cls}",
+                    tokenizer=self.tokenizer,
+                    transform_config=self.validate_transform_config,
+                    debug=self.debug,
+                    data_name=self.data_name,
+                )
     
     def predict_dataloader(self):
         if not hasattr(self, "_predict_ds"):
@@ -141,6 +167,16 @@ class UniRigDatasetModule(pl.LightningDataModule):
         return self._create_dataloader(
             dataset=self._predict_ds,
             config=self.predict_dataset_config,
+            is_train=False,
+            drop_last=False,
+        )
+
+    def val_dataloader(self) -> EVAL_DATALOADERS:
+        if not hasattr(self, "_validation_ds"):
+            self.setup()
+        return self._create_dataloader(
+            dataset=self._validation_ds,
+            config=self.validate_dataset_config,
             is_train=False,
             drop_last=False,
         )
