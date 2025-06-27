@@ -189,6 +189,14 @@ def denormalize_vertices(mesh_vertices: ndarray, vertices: ndarray, bones: ndarr
 
     return denormalized_vertices, denormalized_bones
 
+def get_matrix(ob):
+    m = np.eye(4)
+    while ob:
+        if hasattr(ob, 'matrix_world'):
+            m = m @ np.array(ob.matrix_world)
+        ob = ob.parent
+    return m
+
 def make_armature(
     vertices: ndarray,
     bones: ndarray, # (joint, tail)
@@ -202,10 +210,14 @@ def make_armature(
     context = bpy.context
     
     mesh_vertices = []
+    local_coord = np.eye(4)
+    local_parent = None
     for ob in bpy.data.objects:
-        print(ob.name)
         if ob.type != 'MESH':
             continue
+        if ob.parent is not None:
+            local_coord = get_matrix(ob.parent)
+            local_parent = ob.parent
         m = np.array(ob.matrix_world)
         matrix_world_rot = m[:3, :3]
         matrix_world_bias = m[:3, 3]
@@ -247,6 +259,9 @@ def make_armature(
         bone.use_connect = False # always False currently
 
     vertices, bones = get_correct_orientation_kdtree(vertices, mesh_vertices, bones)
+    inv = np.linalg.inv(local_coord)
+    bones[:, :3] = (inv[:3, :3] @ bones[:, :3].T + inv[:3, 3:4]).T
+    bones[:, 3:] = (inv[:3, :3] @ bones[:, 3:].T + inv[:3, 3:4]).T
     for i in range(J):
         if add_root:
             pname = 'Root' if parents[i] is None else names[parents[i]]
@@ -297,6 +312,7 @@ def make_armature(
                 ob.vertex_groups[n].add([v], vertex_group_reweight[index[v], ii], 'REPLACE')
         armature.select_set(False)
         ob.select_set(False)
+    armature.parent = local_parent
     
     # set vrm bones link
     if is_vrm:
