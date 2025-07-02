@@ -1,12 +1,12 @@
 from .unirig_ar import UniRigAR
-from .unirig_skin import UniRigSkin
+#from .unirig_skin import UniRigSkin
 
 from .spec import ModelSpec
 
 def get_model(**kwargs) -> ModelSpec:
     MAP = {
         'unirig_ar': UniRigAR,
-        'unirig_skin': UniRigSkin,
+        #'unirig_skin': UniRigSkin,
     }
     __target__ = kwargs['__target__']
     del kwargs['__target__']
