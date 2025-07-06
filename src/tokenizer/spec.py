@@ -69,7 +69,7 @@ class TokenizeInput():
     def num_bones(self):
         return self.bones.shape[0]
 
-@dataclass(frozen=True)
+@dataclass
 class DetokenizeOutput(Exporter):
     # original tokens
     tokens: ndarray
