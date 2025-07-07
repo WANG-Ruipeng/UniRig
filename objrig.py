@@ -203,7 +203,7 @@ def run_unirig_inference_final(processed_data_dir: str):
     return predictions, hidden_state_from_hook
 
 # =====================================================================
-# --- 主执行函数 ---
+# --- 主执行函数 (最终版 - 新增保存隐藏状态) ---
 # =====================================================================
 if __name__ == '__main__':
     # 确保脚本在 UniRig 项目根目录运行
@@ -216,8 +216,10 @@ if __name__ == '__main__':
     # 定义中间文件的输出目录
     temp_npz_dir = os.path.join('temp_preprocess', file_basename)
     
-    # 定义最终的 BVH 输出路径，使其与输入文件在同一目录下
+    # 定义最终的输出路径
     output_bvh_path = os.path.join(input_dir, f"{file_basename}_rig.bvh")
+    # --- 新增：定义隐藏状态的输出路径 ---
+    output_hidden_state_path = os.path.join(input_dir, f"{file_basename}_hidden_state.npy")
 
     if not os.path.exists(input_obj_file):
         print(f"❌ [错误] 输入的 .obj 文件不存在: {input_obj_file}")
@@ -229,19 +231,27 @@ if __name__ == '__main__':
             # 步骤 2: UniRig 推理
             predictions, hidden_state_X = run_unirig_inference_final(processed_data_dir=temp_npz_dir)
     
-            # 步骤 3: 检查结果并保存 BVH
+            # 步骤 3: 检查结果并保存所有产物
             if hidden_state_X is not None and predictions and len(predictions) > 0 and len(predictions[0]) > 0:
                 print("\n" + "="*30)
                 print("🎉 恭喜！整个流程已打通！ 🎉")
                 print("="*30)
-                print(f"✅ 捕获到的隐藏状态 (X) 的形状: {hidden_state_X.shape}")
                 
-                # 从嵌套列表中提取出真正的 DetokenizeOutput 对象
+                # --- 保存 BVH 文件 ---
                 skeleton_obj = predictions[0][0]
                 print(f"✅ 成功提取骨架对象，类型为: {type(skeleton_obj)}")
-                
-                # 调用我们的新函数来保存 BVH 文件
                 save_skeleton_to_bvh(skeleton_obj, output_bvh_path)
+
+                # --- 新增：保存隐藏状态 X ---
+                print(f"\n💾  开始保存隐藏状态 (X) 到: {output_hidden_state_path}...")
+                
+                # hidden_state_X 的形状是 [beam_size, seq_len, hidden_dim]，例如 [15, 1, 1024]
+                # 我们通常取第一个（最可能的）beam结果作为特征向量。
+                # 还需要从 PyTorch Tensor 转换为 NumPy array。
+                feature_vector = hidden_state_X[0].numpy()
+                
+                np.save(output_hidden_state_path, feature_vector)
+                print(f"✅ 成功保存隐藏状态，形状为: {feature_vector.shape}")
                 
             else:
                 print("❌ 错误: 推理完成但未能获取有效结果。")
